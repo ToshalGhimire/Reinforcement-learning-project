@@ -54,58 +54,79 @@ def one_hot_encode(action):
 def get_epsilon():
     i = 0
     while (True):
-        yield (1 - 0.9 * (i / 1000000)) if i < 1000000 else 0.1
+        yield (1 - 0.9 * (i / 50000)) if i < 50000 else 0.1
 
         i += 1
 
-def q_learn(env, model, gamma=0.9, *args):
+def q_learn(env, model, gamma=0.9):
     get_ep = get_epsilon()
-    done = False
-    memory = RingBuffer()
-    s_t = process_data(env.reset(), init=True)
-    loss = 0
-
-    S_t = s_t.repeat(4, axis=3)
+    games_won = 0
+    threshold = 0.0
 
     for t in itertools.count():
-        if np.random.random() <= next(get_ep):
-            action_idx = np.random.randint(0, 3)
-        else:
-            action_idx = np.argmax(model.predict(state))
+        done = False
+        memory = RingBuffer()
 
-        s_t_prime, reward, done, info = env.step(ACTIONS[action_idx])
-        s_t_prime = process_data(s_t_prime, init=True)
+        s_t = process_data(env.reset(), init=True)
 
-        S_t_prime = np.append(s_t_prime, S_t[:, :, :, :3], axis=3)
+        S_t = s_t.repeat(4, axis=3)
 
-        memory.append((S_t, action_idx, reward, S_t_prime, done))
+        round_loss = 0
 
-        env.render()
+        while not done:
+            if np.random.random() <= next(get_ep):
+                action_idx = np.random.randint(0, 3)
+            else:
+                action_idx = np.argmax(model.predict(S_t))
 
-        if t > 400:
-            batch = memory.sample(BATCH_SIZE)
+            s_t_prime, reward, done, info = env.step(ACTIONS[action_idx])
+            s_t_prime = process_data(s_t_prime, init=True)
 
-            states_t, actions_t, rewards_t, states_t_prime, done_t = [], [], [], [], []
-            for state, action, reward, state_prime, done in batch:
-                states_t.append(state[0])
-                actions_t.append(action)
-                rewards_t.append(reward)
-                states_t_prime.append(state_prime[0])
-                done_t.append(done)
+            S_t_prime = np.append(s_t_prime, S_t[:, :, :, :3], axis=3)
 
-            states_t = np.array(states_t)
-            states_t_prime = np.array(states_t_prime)
+            memory.append((S_t, action_idx, reward, S_t_prime, done))
 
-            Q_sa_prime = model.predict(states_t)
-            Q_sa = model.predict(states_t_prime)
+            # env.render()
 
-            Q_sa_prime[:, actions_t] = rewards_t + gamma * np.max(Q_sa, axis=1) * np.invert(done_t)
+            if t > 400:
+                batch = memory.sample(BATCH_SIZE)
 
-            prev_loss = loss
-            loss += model.train_on_batch(states_t, Q_sa_prime)
-            print("Total loss: {:05f}\tMarginal loss: {:05f}".format(loss, prev_loss), end='\r')
+                states_t, actions_t, rewards_t, states_t_prime, done_t = [], [], [], [], []
+                for state, action, reward, state_prime, done in batch:
+                    states_t.append(state[0])
+                    actions_t.append(action)
+                    rewards_t.append(reward)
+                    states_t_prime.append(state_prime[0])
+                    done_t.append(done)
 
-        S_t = S_t_prime
+                states_t = np.array(states_t)
+                states_t_prime = np.array(states_t_prime)
+
+                Q_sa_prime = model.predict(states_t)
+                Q_sa = model.predict(states_t_prime)
+
+                Q_sa_prime[:, actions_t] = rewards_t + gamma * np.max(Q_sa, axis=1) * np.invert(done_t)
+
+                prev_loss = round_loss
+                round_loss += model.train_on_batch(states_t, Q_sa_prime)
+
+                print("Loss for batch: {:05f}".format(prev_loss-round_loss), end='\r')
+
+                if (t % 1000) == 0:
+                    model.save_weights("weights.h5", overwrite=True)
+
+                if (games_won-threshold >= 0.1):
+                    model.save_weights("weights_{:02f}_won.hf".format(games_won))
+                    threshold = games_won
+
+                print()
+
+            S_t = S_t_prime
+
+        if reward == 1:
+            games_won += 1
+
+        print("Total games: {}\tPct games won: {:05f}\tGame {} loss: {:05f}".format(t+1, games_won/(t+1), t+1, round_loss))
 
 if __name__ == '__main__':
     model = Sequential()
